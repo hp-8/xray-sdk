@@ -1,2 +1,1 @@
-"""API Routes"""
-
+"""API routes."""

@@ -1,2 +1,1 @@
-"""X-Ray API Server"""
-
+"""X-Ray API."""

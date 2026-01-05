@@ -1,2 +1,1 @@
-"""Database Module"""
-
+"""Database."""

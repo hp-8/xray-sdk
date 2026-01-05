@@ -1,10 +1,3 @@
-"""
-X-Ray API Server
-
-FastAPI application for the X-Ray debugging system.
-Provides endpoints for ingesting and querying pipeline debug data.
-"""
-
 import os
 from contextlib import asynccontextmanager
 
@@ -17,11 +10,8 @@ from api.routes import ingest, query, visualize
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
-    # Startup
     await init_db()
     yield
-    # Shutdown
     await close_db()
 
 
@@ -32,16 +22,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(ingest.router)
 app.include_router(query.router)
 app.include_router(visualize.router)
@@ -49,25 +37,14 @@ app.include_router(visualize.router)
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
-    return {
-        "service": "X-Ray API",
-        "version": "0.1.0",
-        "status": "healthy"
-    }
+    return {"service": "X-Ray API", "version": "0.1.0"}
 
 
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    
-    host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", "8000"))
-    
-    uvicorn.run(app, host=host, port=port)
-
+    uvicorn.run(app, host=os.getenv("API_HOST", "0.0.0.0"), port=int(os.getenv("API_PORT", "8000")))

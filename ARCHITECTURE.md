@@ -1,8 +1,8 @@
-# X-Ray SDK & API - Architecture Document
+# X-Ray Architecture
 
-## Overview
+## What Is This?
 
-X-Ray is a debugging system for non-deterministic, multi-step algorithmic pipelines. Unlike traditional tracing which answers "what happened?", X-Ray answers "**why did the system make this decision?**"
+X-Ray is a debugging tool for non-deterministic pipelines. Traditional tracing answers "what happened?" - X-Ray answers "**why did the system make this decision?**"
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -38,80 +38,68 @@ X-Ray is a debugging system for non-deterministic, multi-step algorithmic pipeli
 
 ## Data Model
 
-### Entity Relationship
+### Hierarchy
 
 ```
 Run (pipeline execution)
  └── Step (decision point)
       └── Decision (time-ordered event)
-           └── Evidence (additional context)
+           └── Evidence (extra context)
 ```
 
-### Schema
+### Tables
 
-| Table | Key Fields | Purpose |
-|-------|------------|---------|
-| **runs** | `id`, `pipeline_type`, `status`, `input_context`, `output_result` | Track complete pipeline executions |
-| **steps** | `id`, `run_id`, `step_name`, `stats`, `reasoning` | Capture decision points with pre-computed stats |
-| **decisions** | `id`, `step_id`, `candidate_id`, `decision_type`, `reason`, `score` | Time-ordered decision events |
-| **evidence** | `id`, `decision_id`, `evidence_type`, `data` | Heavy context (LLM outputs, API responses) |
+| Table | Key Fields | What it stores |
+|-------|------------|----------------|
+| **runs** | `id`, `pipeline_type`, `status`, `input_context`, `output_result` | Complete pipeline executions |
+| **steps** | `id`, `run_id`, `step_name`, `stats`, `reasoning` | Decision points with pre-computed stats |
+| **decisions** | `id`, `step_id`, `candidate_id`, `decision_type`, `reason`, `score` | Individual decision events |
+| **evidence** | `id`, `decision_id`, `evidence_type`, `data` | Heavy stuff (LLM outputs, API responses) |
 
-### Data Model Rationale
+### Why Decisions as Events?
 
-**Why Decisions as Primary Events (not Candidates as Entities)?**
+The core insight: **one candidate can have multiple decisions across steps.**
 
-1. **One candidate, multiple decisions**: A candidate can be evaluated multiple times across steps. With decisions as events, we capture the full timeline:
-   - Step 1 (filtering): Candidate A **rejected** (price too high)
-   - Step 2 (re-evaluation): Candidate A **accepted** (reconsidered)
-   - Step 3 (ranking): Candidate A **rejected** (lower score than winner)
+Consider this timeline:
+- Step 1 (filtering): Candidate A **rejected** - price too high
+- Step 2 (re-evaluation): Candidate A **accepted** - reconsidered with discount
+- Step 3 (ranking): Candidate A **rejected** - lower score than winner
 
-2. **Sampling preserves reasoning**: When handling 5000 candidates, sampling decision events (all accepted + N rejected per reason) preserves reasoning diversity better than sampling entities.
+If we modeled candidates as entities with a single status, we'd lose this history. Decisions as events preserve the full timeline.
 
-3. **Time-ordering is natural**: Decisions have timestamps and sequence order. Debugging often requires understanding "when did this decision happen relative to others?"
+This also makes sampling work better. When you have 5000 candidates, sampling *decision events* (all accepted + N rejected per reason) keeps more useful debugging info than sampling entities.
 
-**What would break with a different model?**
+### Data Structure Choices
 
-- **Candidates as JSONB on Step**: Loses ability to query "all decisions for candidate X across all runs"
-- **Candidates as separate entity table**: Awkward to model multiple decisions for the same candidate
-
-### Why These Data Structures?
-
-| Structure | Choice | Reason |
-|-----------|--------|--------|
-| **Decisions** | `list[Decision]` (array) | Preserves time-ordering; same candidate can have multiple decisions across the pipeline |
-| **Stats** | `dict` (JSON) | Flexible schema; different steps have different stats |
-| **Input/Output** | `dict` (JSON) | Domain-agnostic; competitor selection has different inputs than content generation |
-| **Grouping by reason** | `dict[str, list]` | O(1) lookup for "N per reason" sampling vs O(n×k) for repeated filtering |
-| **Decisions storage** | Separate SQL table | Enables cross-run queries: "all decisions for candidate X" |
-
-**Key principle**: Optimize for debugging queries, not just storage efficiency.
+| Structure | Choice | Why |
+|-----------|--------|-----|
+| **Decisions** | `list[Decision]` | Preserves ordering; same candidate can appear multiple times |
+| **Stats** | `dict` (JSON) | Different steps have different stats |
+| **Input/Output** | `dict` (JSON) | Domain-agnostic |
+| **Grouping by reason** | `dict[str, list]` | O(1) lookup for "N per reason" sampling |
+| **Decisions storage** | Separate SQL table | Enables queries like "all decisions for candidate X" |
 
 ---
 
-## API Specification
+## API
 
-### Ingest Endpoints
+### Creating Data
 
-#### Create Run
-```
+**Start a run:**
+```http
 POST /v1/runs
-Content-Type: application/json
-
 {
   "pipeline_type": "competitor_selection",
   "name": "find_competitor_product-123",
   "input": {"product_id": "product-123", "title": "Laptop Stand"},
   "metadata": {"source": "api"}
 }
-
-Response: {"run_id": "uuid-here"}
+→ {"run_id": "uuid-here"}
 ```
 
-#### Record Step
-```
+**Record a step:**
+```http
 POST /v1/runs/{run_id}/steps
-Content-Type: application/json
-
 {
   "name": "filtering",
   "input": {"candidate_count": 5000},
@@ -127,76 +115,56 @@ Content-Type: application/json
   ],
   "reasoning": "Applied price cap ($100) and minimum rating (3.5)"
 }
-
-Response: {"step_id": "uuid", "stats": {...}}
+→ {"step_id": "uuid", "stats": {...}}
 ```
 
-#### Complete Run
-```
+**Complete a run:**
+```http
 PATCH /v1/runs/{run_id}
-Content-Type: application/json
-
 {
   "result": {"competitor_id": "prod-456"},
   "status": "completed"
 }
 ```
 
-### Query Endpoints
+### Querying Data
 
-#### List Runs
-```
+```http
 GET /v1/runs?pipeline_type=competitor_selection&status=completed&page=1&page_size=20
-```
-
-#### Get Run with Steps
-```
 GET /v1/runs/{run_id}?include_decisions=true
-```
 
-#### Query Steps (Cross-Pipeline)
-```
 POST /v1/query/steps
-{
-  "step_name": "filtering",
-  "min_rejection_rate": 0.9
-}
-```
+{"step_name": "filtering", "min_rejection_rate": 0.9}
 
-#### Query Decisions
-```
 POST /v1/query/decisions
-{
-  "candidate_id": "prod-123"
-}
+{"candidate_id": "prod-123"}
 ```
 
 ---
 
-## Debugging Walkthrough: Phone Case vs Laptop Stand
+## Debugging Example
 
-**Scenario**: A competitor selection run returns a poor match—a **phone case** matched against a **laptop stand**.
+**Problem:** competitor selection returned a phone case for a laptop stand.
 
-### Step 1: Find the Run
+### Step 1: Find the run
 
 ```python
 runs = xray.query_runs(pipeline_type="competitor_selection")
-# Find the problematic run by inspecting outputs
+# find the bad one
 ```
 
-### Step 2: Inspect the Run
+### Step 2: Inspect it
 
 ```python
 run = xray.get_run(run_id, include_decisions=True)
-# Shows:
-# - input: {"title": "Adjustable Laptop Stand"}
-# - output: {"competitor_id": "phone-case-xyz"}
-# - steps: ["keyword_generation", "candidate_search", "filtering", "final_selection"]
+# input: {"title": "Adjustable Laptop Stand"}
+# output: {"competitor_id": "phone-case-xyz"}
+# steps: keyword_generation → candidate_search → filtering → final_selection
 ```
 
-### Step 3: Check Each Step
+### Step 3: Check each step
 
-**Keyword Generation**:
+**Keyword generation:**
 ```json
 {
   "input": {"title": "Adjustable Laptop Stand"},
@@ -204,9 +172,9 @@ run = xray.get_run(run_id, include_decisions=True)
   "reasoning": "Extracted keywords from title"
 }
 ```
-**Issue**: Keywords are too generic. "stand" and "holder" match phone accessories.
+Problem: keywords are too generic. "stand" and "holder" match phone stuff.
 
-**Filtering Stats**:
+**Filtering stats:**
 ```json
 {
   "stats": {
@@ -221,59 +189,55 @@ run = xray.get_run(run_id, include_decisions=True)
   }
 }
 ```
-**Issue**: Only 1470 rejected for category mismatch. Many phone accessories passed.
+Problem: only 1470 rejected for category mismatch. Many phone accessories slipped through.
 
-**Final Selection**:
+**Final selection:**
 ```json
 {
   "decisions": [
     {"candidate_id": "phone-case-xyz", "decision_type": "accepted", "score": 0.92},
     {"candidate_id": "laptop-stand-abc", "decision_type": "rejected", "score": 0.87}
-  ],
-  "reasoning": "Selected based on highest keyword overlap"
+  ]
 }
 ```
-**Issue**: Phone case scored higher on keyword overlap.
+Problem: phone case scored higher on keyword overlap.
 
-### Root Cause
+### Root cause
 
-1. **Keywords too generic**: "stand", "holder" match phone accessories
-2. **Category filter too loose**: Allowed cross-category matches
-3. **Ranking over-weighted keywords**: Didn't penalize category mismatch enough
+1. Keywords too generic
+2. Category filter too loose
+3. Ranking over-weighted keyword overlap
 
 ### Fix
 
-1. Add category-aware keyword extraction
-2. Stricter category matching in filters
+1. Category-aware keyword extraction
+2. Stricter category matching
 3. Weight category match higher in ranking
 
 ---
 
-## Queryability: Cross-Pipeline Analysis
+## Cross-Pipeline Queries
 
-### The Challenge
+### The Problem
 
-The system will be used across multiple pipelines (competitor selection, listing optimization, categorization, etc.), each with different steps. Users need to ask questions like:
+Multiple pipelines (competitor selection, listing optimization, categorization...) with different steps. Users want to ask:
 
-> "Show me all runs where the filtering step eliminated more than 90% of candidates"—regardless of which pipeline it was.
+> "Show me all runs where filtering eliminated more than 90% of candidates"
 
-### Our Solution
+...regardless of which pipeline.
 
-#### 1. Consistent Step Naming Conventions
+### The Solution
 
-Developers follow naming conventions for common step types:
+**1. Consistent naming conventions:**
 
-| Convention | Examples | Query Use |
-|------------|----------|-----------|
-| `*_generation` | `keyword_generation`, `draft_generation` | Find all generation steps |
-| `*_search` | `candidate_search`, `product_search` | Find search bottlenecks |
-| `filtering` | `filtering`, `price_filtering` | Analyze filter effectiveness |
-| `ranking` | `ranking`, `relevance_ranking` | Debug ranking logic |
-| `*_selection` | `final_selection`, `winner_selection` | Trace final decisions |
+| Pattern | Examples |
+|---------|----------|
+| `*_generation` | `keyword_generation`, `draft_generation` |
+| `*_search` | `candidate_search`, `product_search` |
+| `filtering` | `filtering`, `price_filtering` |
+| `*_selection` | `final_selection`, `winner_selection` |
 
-#### 2. Pre-computed Stats on Steps
-
-Every step stores pre-computed statistics:
+**2. Pre-computed stats on every step:**
 
 ```json
 {
@@ -281,95 +245,73 @@ Every step stores pre-computed statistics:
     "input_count": 5000,
     "output_count": 30,
     "rejection_rate": 0.994,
-    "rejection_reasons": {
-      "price_exceeds_threshold": 2000,
-      "rating_below_minimum": 1500,
-      "category_mismatch": 1470
-    }
+    "rejection_reasons": {"price_exceeds_threshold": 2000, ...}
   }
 }
 ```
 
-This enables efficient queries without scanning decision tables:
-
+Query without scanning all decisions:
 ```sql
 SELECT * FROM steps 
 WHERE step_name = 'filtering' 
 AND (stats->>'rejection_rate')::float > 0.9;
 ```
 
-#### 3. Cross-Pipeline Query API
+**3. Cross-pipeline query endpoint:**
 
-```
+```http
 POST /v1/query/steps
 {
   "step_name": "filtering",
   "min_rejection_rate": 0.9,
-  "pipeline_type": null  // All pipelines
+  "pipeline_type": null  // all pipelines
 }
 ```
 
-#### 4. Decision-Level Queries
+**4. Decision-level queries:**
 
-Track a candidate across all runs:
-
-```
+Track a candidate across runs:
+```http
 POST /v1/query/decisions
-{
-  "candidate_id": "prod-123"
-}
+{"candidate_id": "prod-123"}
 ```
 
-Find all rejections for a specific reason:
-
-```
+Find all rejections for a reason:
+```http
 POST /v1/query/decisions
-{
-  "reason": "category_mismatch",
-  "step_name": "filtering"
-}
+{"reason": "category_mismatch", "step_name": "filtering"}
 ```
 
-### Constraints on Developers
+### Developer Constraints
 
-To enable queryability, developers must:
-
-1. **Use consistent step names** across similar pipelines
-2. **Provide decision reasons** as standardized strings (e.g., `price_exceeds_threshold`, not `"price was too high"`)
-3. **Include candidate_id** for all decisions (enables cross-run tracking)
-4. **Record stats-relevant data**: input counts, output counts for filtering steps
-
-### Extensibility for New Use Cases
-
-The system is extensible via:
-
-- **`pipeline_type`**: Group runs by pipeline
-- **`metadata`** fields: Add custom queryable attributes
-- **`step.config`**: Store filter configurations for analysis
+To make this work, devs need to:
+1. Use consistent step names
+2. Use standardized reason strings (`price_exceeds_threshold`, not `"price was too high"`)
+3. Include `candidate_id` on all decisions
+4. Record input/output counts
 
 ---
 
-## Performance & Scale
+## Handling Scale
 
 ### The 5000 → 30 Problem
 
-**Question**: How do you handle a step that evaluates 5000 candidates and passes 30?
+A filtering step evaluates 5000 candidates and passes 30. What do we store?
 
-**Answer**: Decision sampling in the SDK.
+**Answer:** sample the decisions.
 
-```python
-# SDK Sampling Strategy
-Sampler:
-  threshold: 500        # Max decisions before sampling
-  per_reason: 50        # Rejected decisions to keep per reason
+```
+Sampler config:
+  threshold: 500        # when to start sampling
+  per_reason: 50        # rejected decisions to keep per reason
 
 Algorithm:
-  1. Keep ALL accepted decisions (we care about what passed)
-  2. Keep N random rejected decisions PER REASON (preserve diversity)
-  3. Maintain time-ordering (sequence_order field)
+  1. Keep ALL accepted (we care about what passed)
+  2. Keep N random rejected PER REASON (preserve diversity)
+  3. Maintain time-ordering
 ```
 
-**Trade-offs**:
+**Trade-offs:**
 
 | Approach | Completeness | Storage | Query Speed |
 |----------|--------------|---------|-------------|
@@ -377,18 +319,16 @@ Algorithm:
 | Sample to 500 | ~10% rejected, 100% accepted | Low | Fast |
 | Stats only | 0% detail | Minimal | Fastest |
 
-**Our choice**: Sample decisions + pre-compute stats. This gives:
-- Full detail on accepted decisions (debugging winners)
-- Representative rejected decisions (understanding why things failed)
-- Efficient queries via stats (rejection_rate > 0.9)
-
-**Who decides?** The developer controls sampling threshold via SDK config. System always computes stats for queryability.
+We chose sampling + pre-computed stats. You get:
+- Full detail on accepted decisions (debug winners)
+- Representative rejected decisions (understand failures)
+- Efficient queries via stats
 
 ---
 
 ## Developer Experience
 
-### Minimal Instrumentation
+### Minimal
 
 ```python
 from xray import XRay, Step
@@ -399,7 +339,7 @@ xray.record_step(run_id, Step(name="step1"))
 xray.complete_run(run_id)
 ```
 
-### Full Instrumentation
+### Full
 
 ```python
 from xray import XRay, Step, Decision
@@ -431,49 +371,34 @@ xray.record_step(run_id, Step(
 xray.complete_run(run_id, result={"winner": "product-456"})
 ```
 
-### Backend Unavailability
+### When the API is down
 
-If the X-Ray API is down:
 1. SDK logs a warning
-2. Pipeline continues execution (non-blocking)
-3. Debug data is lost for that run
+2. Pipeline continues (non-blocking)
+3. Debug data lost for that run
 
-**Rationale**: Debug system should never break the pipeline it's debugging.
+The debug system should never break the pipeline it's debugging.
 
 ---
 
-## Real-World Application
+## Real-World: Content Generation Pipeline
 
-### Socella: AI-Powered Social Content Generation Pipeline
+During early work on **Socella** (AI-powered social content workspace), I was designing a content generation pipeline. The system would:
 
-During the early stages of **Socella**, an AI-powered workspace for managing social content, I was involved in designing a content generation pipeline, although it was not fully implemented due to the product being in an early validation phase.
-
-The proposed system was intended to:
 - Interpret user intent and brand context
-- Generate multiple content drafts using an LLM
-- Apply heuristic filters such as tone, length, and platform constraints
-- Score and rank drafts based on engagement and relevance signals
-- Select a final version for publishing or review
+- Generate multiple drafts via LLM
+- Apply filters (tone, length, platform constraints)
+- Score and rank drafts
+- Select a final version
 
-While working through this design, it became clear that the pipeline would be inherently non-deterministic. The same input could yield different outputs across runs, which was desirable for creativity but posed a major challenge for debugging and iteration.
+Even at the design stage, questions came up:
+- Which drafts were generated but discarded?
+- Why was one version selected over others?
+- Is this a prompt issue, filter issue, or ranking issue?
 
-Even at the design stage, several debugging questions emerged:
-- How would we know which drafts were generated but discarded?
-- How would we explain why one version was selected over others?
-- How would we distinguish prompt issues from filtering or ranking issues?
-- How could we systematically improve the system without replaying entire runs?
+Answering these would require ad-hoc logging and manual inspection.
 
-Answering these questions would have required significant ad-hoc logging and manual inspection, making iteration slow and fragile.
-
-### Retrofitting X-Ray into Socella
-
-X-Ray is directly informed by this experience. It formalizes the debugging needs identified during the design phase by:
-- **Modeling each draft evaluation as a decision event**: Each generated draft becomes a candidate with an explicit accept/reject decision
-- **Capturing filtering and ranking outcomes explicitly**: Filter steps record which drafts failed tone checks, length constraints, or platform rules
-- **Storing LLM prompts and outputs as evidence**: The original prompt, generated drafts, and LLM reasoning are stored as evidence attached to decisions
-- **Enabling cross-run analysis of failure patterns**: Query "all runs where tone filter rejected >50% of drafts" to identify systematic issues
-
-**Integration Example:**
+### How X-Ray Would Help
 
 ```python
 from xray import XRay, Step, Decision, Evidence
@@ -484,7 +409,7 @@ run_id = xray.start_run(
     input={"user_intent": "announce product launch", "brand_voice": "professional"}
 )
 
-# Step 1: Generate drafts
+# Generate drafts
 drafts = llm.generate_multiple_drafts(prompt, count=10)
 xray.record_step(run_id, Step(
     name="draft_generation",
@@ -494,18 +419,18 @@ xray.record_step(run_id, Step(
     reasoning="Generated 10 draft variations using GPT-4"
 ))
 
-# Step 2: Apply filters
+# Filter
 decisions = []
 for draft in drafts:
-    tone_check = check_tone(draft, brand_voice)
-    length_check = check_length(draft, platform="twitter")
+    tone_ok = check_tone(draft, brand_voice)
+    length_ok = check_length(draft, platform="twitter")
     
-    if not tone_check or not length_check:
+    if not tone_ok or not length_ok:
         decisions.append(Decision(
             candidate_id=draft.id,
             decision_type="rejected",
-            reason="tone_mismatch" if not tone_check else "length_exceeded",
-            metadata={"tone_score": tone_check, "length": len(draft)}
+            reason="tone_mismatch" if not tone_ok else "length_exceeded",
+            metadata={"tone_score": tone_ok, "length": len(draft)}
         ))
     else:
         decisions.append(Decision(
@@ -522,52 +447,38 @@ xray.record_step(run_id, Step(
     reasoning="Applied tone and length filters"
 ))
 
-# Step 3: Ranking and selection
+# Select winner
 ranked = rank_drafts([d for d in drafts if passed_filter(d)])
 winner = ranked[0]
-
 xray.complete_run(run_id, result={"selected_draft_id": winner.id})
 ```
 
-**Debugging Scenarios X-Ray Would Enable:**
+**Debugging scenarios:**
 
-1. **"Why did we reject 8 out of 10 drafts?"**
-   - Query: `POST /v1/query/steps` with `step_name="filtering"` and `min_rejection_rate=0.8`
-   - Inspect rejection reasons: Are tone filters too strict? Length constraints too tight?
-
-2. **"Why was draft X selected over draft Y?"**
-   - Get run: `GET /v1/runs/{run_id}?include_decisions=true`
-   - Compare scores and ranking logic for both drafts
-
-3. **"Are our prompts generating off-brand content?"**
-   - Query decisions: `POST /v1/query/decisions` with `reason="tone_mismatch"`
-   - Review evidence (LLM outputs) to identify prompt issues
-
-4. **"Which filter is eliminating the best drafts?"**
-   - Cross-run analysis: Find runs where high-scoring drafts were rejected
-   - Adjust filter thresholds based on data
-
-Although the Socella pipeline was not fully implemented, the design process highlighted the exact class of problems X-Ray is meant to solve: **non-deterministic, multi-step systems where understanding decision reasoning is critical for iteration and improvement**.
+1. **"Why did we reject 8/10 drafts?"** — Query filtering steps with high rejection rate, inspect reasons
+2. **"Why draft X over draft Y?"** — Compare scores and ranking logic
+3. **"Are prompts generating off-brand content?"** — Query decisions with `reason="tone_mismatch"`, review LLM evidence
+4. **"Which filter kills the best drafts?"** — Cross-run analysis of high-scoring rejections
 
 ---
 
-## What Next: Future Improvements
+## Future Work
 
-If shipping for production:
+If productionizing:
 
-1. **Observability**: SDK metrics (latency, error rates), API dashboards
-2. **Storage**: TTL policies, tiered storage, compression
-3. **Security**: API authentication, tenant isolation, PII redaction
-4. **DX**: Web UI for exploration, CLI tool, VS Code extension
+1. **Observability**: SDK metrics, API dashboards
+2. **Storage**: TTL, tiered storage, compression
+3. **Security**: Auth, tenant isolation, PII redaction
+4. **DX**: Web UI, CLI, VS Code extension
 5. **Querying**: Full-text search on reasoning, anomaly detection
-6. **SDK**: Multi-language support (JS, Go), OpenTelemetry integration
+6. **SDK**: Multi-language (JS, Go), OpenTelemetry integration
 
 ---
 
-## Comparison with Traditional Tracing
+## vs Traditional Tracing
 
-| Aspect | Traditional Tracing (Jaeger, Zipkin) | X-Ray |
-|--------|--------------------------------------|-------|
+| | Jaeger/Zipkin | X-Ray |
+|--|---------------|-------|
 | Focus | Performance & request flow | Decision reasoning |
 | Data | Spans, timing, service calls | Decisions, candidates, filters |
 | Question | "What happened?" | "Why this output?" |
