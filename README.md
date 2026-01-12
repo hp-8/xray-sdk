@@ -127,16 +127,6 @@ python -m examples.competitor_selection
 # Result: Successfully records 5000 decisions, samples to ~530 ✅
 ```
 
-## Recent Improvements (2026-01-13)
-
-- ✅ Fixed all 9 MyPy errors (type-safe codebase)
-- ✅ Implemented ADR-001 (server-side sampling with transparency)
-- ✅ Extracted HTML template to separate module (separation of concerns)
-- ✅ Centralized configuration in `xray/config.py`
-- ✅ Removed duplicate code (DRY principle)
-- ✅ Added input validation (DoS protection)
-- ✅ Comprehensive documentation (3,500+ lines)
-
 ## Caveats
 
 - Sync SDK (no background buffering) - suitable for demo, would add async for production
