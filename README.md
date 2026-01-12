@@ -115,18 +115,6 @@ examples/
 - `INFO_MD_REQUIREMENTS_CHECKLIST.md` - Line-by-line verification
 - `FINAL_SUMMARY.md` - Complete implementation summary
 
-## Code Quality
-
-```bash
-# Type safety
-mypy --config-file mypy.ini api/ xray/
-# Result: Success: no issues found in 16 source files ✅
-
-# Run example
-python -m examples.competitor_selection
-# Result: Successfully records 5000 decisions, samples to ~530 ✅
-```
-
 ## Caveats
 
 - Sync SDK (no background buffering) - suitable for demo, would add async for production
