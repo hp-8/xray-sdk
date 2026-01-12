@@ -1,0 +1,31 @@
+# X-Ray SDK & API Dependencies
+# Note: For Python 3.13, some packages may need latest versions
+
+# API Framework
+fastapi
+uvicorn[standard]
+
+# Database
+sqlalchemy
+greenlet  # Required for SQLAlchemy async operations
+aiosqlite  # SQLite async support (default)
+# asyncpg  # PostgreSQL async support (optional - uncomment if using PostgreSQL)
+# Note: asyncpg does NOT work with Python 3.13. Use Python 3.11 or 3.12 for PostgreSQL.
+
+# Data Validation
+pydantic
+pydantic-settings
+
+# HTTP Client (for SDK)
+httpx
+
+# Utilities
+python-dotenv
+
+# LLM Integration (optional - for real LLM calls in examples)
+openai  # OpenAI API for LLM steps
+
+# Amazon Product API (optional - for real product search in examples)
+# Using RapidAPI Axesso Amazon Data Service (free tier available)
+# No Amazon Associates account required
+

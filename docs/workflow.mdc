@@ -1,0 +1,24 @@
+# X-Ray Delivery Workflow (Project)
+
+1) Task Intake
+- Confirm ADR/PRD exist; if not, create/update (ADR-001, PRD-xray-lite-v1).
+- Identify if change impacts sampling/stats/query/storage; reference ADR-001.
+
+2) Design & Documentation
+- Update or add ADR/PRD before code; record key decisions in commit/PR notes.
+- Define acceptance criteria from PRD section 6 for the work item.
+
+3) Implementation
+- Respect folder boundaries (SDK in `xray/`, API in `api/`, docs in `docs/`).
+- Reference ADR/PRD in code comments where logic follows them.
+- Default to non-blocking behavior; avoid cross-feature imports.
+
+4) Verification
+- Run targeted tests/demos (e.g., `python -m examples.competitor_selection`).
+- Validate stats and sampling_summary behavior for large decision sets.
+- Check linting on modified files; ensure queries return correct counts.
+
+5) Review & Completion
+- PR/summary must cite ADR-001 and PRD-xray-lite-v1.
+- Note any deviations from PRD acceptance criteria with rationale.
+- Update documentation if behavior or thresholds changed.
