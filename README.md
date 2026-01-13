@@ -106,15 +106,6 @@ examples/
 - `docs/adr/ADR-001-xray-data-capture-and-sampling.md` - Sampling decision record
 - `docs/prds/PRD-xray-lite-v1.md` - Product requirements
 
-**Deep Dives** (`_prep/` folder):
-- `interview.md` - Design decisions & rationale (36 pages)
-- `SIMPLE_EXPLANATION.md` - Quick overview
-- `VIDEO_SCRIPT.md` - Video walkthrough script
-- `REQUIREMENTS_VERIFICATION.md` - Requirements coverage matrix
-- `ACTUAL_IMPLEMENTATION_DATAFLOW.md` - Data flow diagrams
-- `INFO_MD_REQUIREMENTS_CHECKLIST.md` - Line-by-line verification
-- `FINAL_SUMMARY.md` - Complete implementation summary
-
 ## Caveats
 
 - Sync SDK (no background buffering) - suitable for demo, would add async for production
