@@ -2,8 +2,6 @@
 
 Debug non-deterministic pipelines. Figure out *why* the system made a decision, not just what happened.
 
-**Status**: ✅ Production-ready for demo scale (0 MyPy errors, comprehensive docs, tested)  
-**Last Updated**: 2026-01-13
 
 ## Setup
 
